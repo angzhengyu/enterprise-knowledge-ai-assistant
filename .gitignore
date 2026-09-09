@@ -1,0 +1,19 @@
+# 环境与密钥（绝不上传）
+.env
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+
+# 日志
+*.log

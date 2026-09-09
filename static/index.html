@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>企业知识库 AI 助手</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .sub { color: #888; font-size: 13px; margin-bottom: 18px; }
+    .row { display: flex; gap: 8px; }
+    input { flex: 1; padding: 11px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+    button { padding: 11px 20px; background: #1677ff; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    button:disabled { background: #9db8e6; cursor: not-allowed; }
+    .card { margin-top: 18px; padding: 16px; background: #f6f8fb; border-radius: 10px; }
+    .card .answer { font-size: 15px; line-height: 1.6; }
+    .source { margin-top: 12px; font-size: 13px; color: #666; border-top: 1px solid #e3e8f0; padding-top: 10px; }
+    .source b { color: #333; }
+    .err { margin-top: 12px; color: #c00; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>企业知识库 AI 助手</h1>
+  <div class="sub">输入问题，AI 会基于知识库回答，并告诉你来自哪篇文档</div>
+
+  <div class="row">
+    <input id="q" placeholder="例如：docker是什么" />
+    <button id="btn" onclick="ask()">提问</button>
+  </div>
+
+  <div id="out" class="card hidden">
+    <div class="answer"><b>答案：</b><span id="answer"></span></div>
+    <div class="source">来源文档：<b id="source_title"></b></div>
+    <div class="source">引用原文：<span id="source_chunk"></span></div>
+  </div>
+
+  <div id="err" class="err"></div>
+
+  <script>
+    async function ask() {
+      const q = document.getElementById('q').value.trim();
+      const errEl = document.getElementById('err');
+      errEl.textContent = '';
+      if (!q) { errEl.textContent = '请先输入问题'; return; }
+
+      const btn = document.getElementById('btn');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q }),
+        });
+        if (!r.ok) throw new Error('接口返回 ' + r.status);
+        const data = await r.json();
+
+        document.getElementById('out').classList.remove('hidden');
+        document.getElementById('answer').textContent = data.answer;
+        document.getElementById('source_title').textContent = data.source_title;
+        document.getElementById('source_chunk').textContent = data.source_chunk;
+      } catch (e) {
+        errEl.textContent = '请求失败：' + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // 按回车也能提问
+    document.getElementById('q').addEventListener('keydown', e => {
+      if (e.key === 'Enter') ask();
+    });
+  </script>
+</body>
+</html>
