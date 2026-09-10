@@ -26,7 +26,10 @@
 - 🔍 **语义检索**：问题和文档块用余弦相似度比对，找到最相关块
 - 🧠 **生成回答**：把命中的块作为上下文交给 DeepSeek 生成
 - 📌 **引用来源**：返回 `source_title` 和 `source_chunk`，答案可溯源
+- 🛠️ **工具调用（Function Calling）**：`/agent` 接口把检索封装成**工具**，由**模型自己决定**是否调用（闲聊不调、问知识库话题才调），并返回调用轨迹 `trace`
 - 🖥️ **网页前端**：输入问题、显示答案与来源
+
+> 说明：当前每次请求都是**无状态**的（不保存对话历史）。多轮会话 / 上下文管理见 Future Work。
 
 ## 4. 技术栈
 
@@ -115,8 +118,11 @@ python -m uvicorn main:app --reload
 | 接口 | 方法 | 说明 |
 |---|---|---|
 | `/` | GET | 前端页面 |
-| `/ask` | POST | 提问。请求 `{"question": "..."}`；返回 `{question, answer, source_title, source_chunk, sources_used, score, semantic, lexical, matched}` |
+| `/ask` | POST | 知识库问答（流程写死：先检索再回答）。返回 `{question, answer, source_title, source_chunk, sources_used, score, semantic, lexical, matched}` |
+| `/agent` | POST | **Agent 问答（Function Calling）**：模型自己决定是否调用工具。返回 `{answer, trace, steps}` |
 | `/upload` | POST | 上传 `.md/.txt`，保存到 `knowledge/` 并重建索引 |
+| `/reindex` | POST | 从 `knowledge/` 全量重建向量库 |
+| `/health` | GET | 健康检查（向量库条数等） |
 
 **示例**
 
@@ -200,6 +206,7 @@ docker run -p 8000:8000 --env-file .env knowledge-ai-assistant
 - [ ] 重排序（Reranker）精排
 - [ ] **检索评测集**（标注问题集 + 自动跑分），用准确率驱动阈值/权重调优
 - [ ] 支持 PDF / Word 等更多格式解析
+- [ ] **多轮会话（session 状态 / 上下文管理）** —— 当前每次请求**无状态、不保存对话历史**
 - [ ] 用户会话 / 权限 / 日志
 - [ ] 前端更完善（多轮对话、文档管理界面）
 - [x] Docker 化部署

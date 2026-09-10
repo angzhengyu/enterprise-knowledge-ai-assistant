@@ -9,7 +9,8 @@
 
 接口：
   GET  /        前端页面
-  POST /ask     提问：{"question": "..."} → {question, answer, source_title, source_chunk}
+  POST /ask     提问（流程写死：一定先检索、再回答）
+  POST /agent   Agent 提问（Function Calling：模型自己决定要不要调用工具）
   POST /upload  上传 .md/.txt 入库并重建索引
   POST /reindex 从 knowledge/ 全量重建向量库
   GET  /health  健康检查（向量库条数等）
@@ -22,6 +23,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import json
 import os
 from pathlib import Path
 import numpy as np
@@ -138,12 +140,11 @@ if collection.count() == 0:
     rebuild_index()              # 向量库为空才建（贵：要调 embedding API）
 
 
-# ---- 检索 + 生成 ----
-def answer(question: str) -> dict:
-    """混合检索（语义 + 关键词）→ 融合排序 → 取 top-K → 过了门槛才生成回答。"""
+# ---- 混合检索：返回命中的块 / 来源 / 分数（/ask 和 Agent 工具都复用它）----
+def retrieve(question: str) -> dict:
+    """混合检索（语义 + 关键词）→ 融合排序 → 门槛判断。"""
     if collection.count() == 0:
-        return {"answer": "知识库为空，请先上传文档。", "source_title": "",
-                "source_chunk": "", "matched": False}
+        return {"matched": False, "context": "", "sources": [], "scores": {}}
 
     q_vec = embed_texts([question])          # 问题 → 语义向量
 
@@ -158,7 +159,7 @@ def answer(question: str) -> dict:
     else:
         lex_sims = np.zeros(len(all_chunks))
 
-    # ③ 融合打分：语义 × 0.8 + 关键词 × 0.2（权重可调），然后按分数排序
+    # ③ 融合打分并排序
     scored = []
     for pos, idx in enumerate(ids):
         if idx >= len(all_chunks):
@@ -167,47 +168,133 @@ def answer(question: str) -> dict:
         lex = float(lex_sims[idx])
         fused = SEMANTIC_WEIGHT * sem + LEXICAL_WEIGHT * lex
         scored.append((fused, idx, sem, lex))
-    scored.sort(reverse=True)                # 分数从高到低
+    scored.sort(reverse=True)
 
     if not scored:
-        return {"answer": "知识库中没有找到与这个问题相关的内容，无法回答。",
-                "source_title": "", "source_chunk": "", "matched": False}
+        return {"matched": False, "context": "", "sources": [], "scores": {}}
+
+    top_fused, top_idx, top_sem, top_lex = scored[0]
+    scores = {"score": round(top_fused, 4), "semantic": round(top_sem, 4), "lexical": round(top_lex, 4)}
 
     # ④ 门槛：用"最高分"（top-1）去卡
-    top_fused, top_idx, top_sem, top_lex = scored[0]
-    scores = {
-        "score": round(top_fused, 4),      # 融合分（用来卡门槛）
-        "semantic": round(top_sem, 4),     # 语义分（方便你校准权重）
-        "lexical": round(top_lex, 4),      # 关键词分
-    }
     if top_fused < MIN_FUSED_SCORE:
-        return {
-            "answer": "知识库中没有找到与这个问题相关的内容，无法回答。",
-            "source_title": "",          # 不给来源，避免误导用户
-            "source_chunk": "",
-            "matched": False,
-            **scores,
-        }
+        return {"matched": False, "context": "", "sources": [], "scores": scores}
 
-    # ⑤ 取 top-K 块一起当参考文档（只给 1 块容易漏掉真正能回答的那块）
+    # ⑤ 取 top-K 块
     top_hits = scored[:TOP_K]
     context = "\n\n".join(f"[{sources[i]}] {all_chunks[i]}" for _, i, _, _ in top_hits)
+    return {
+        "matched": True,
+        "context": context,
+        "sources": [sources[i] for _, i, _, _ in top_hits],
+        "top_idx": top_idx,
+        "scores": scores,
+    }
+
+
+# ---- /ask：检索 + 生成（流程写死：一定先检索、再回答）----
+def answer(question: str) -> dict:
+    r = retrieve(question)
+    if not r["matched"]:
+        return {"answer": "知识库中没有找到与这个问题相关的内容，无法回答。",
+                "source_title": "", "source_chunk": "", "matched": False, **r["scores"]}
 
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
             {"role": "system", "content": "你是知识库助手，只能根据提供的文档回答，不要自己编。"},
-            {"role": "user", "content": f"参考文档：\n{context}\n\n问题：{question}\n请根据文档回答。"},
+            {"role": "user", "content": f"参考文档：\n{r['context']}\n\n问题：{question}\n请根据文档回答。"},
         ],
     )
+    top_idx = r["top_idx"]
     return {
         "answer": resp.choices[0].message.content,
-        "source_title": sources[top_idx],                         # 最相关的那篇
-        "source_chunk": all_chunks[top_idx],                      # 最相关的那块原文
-        "sources_used": [sources[i] for _, i, _, _ in top_hits],  # 实际用了哪几篇
+        "source_title": sources[top_idx],      # 最相关的那篇
+        "source_chunk": all_chunks[top_idx],   # 最相关的那块原文
+        "sources_used": r["sources"],          # 实际用了哪几篇
         "matched": True,
-        **scores,                       # 带上三个分数，方便看数据调权重/门槛
+        **r["scores"],                         # 带上三个分数，方便看数据调权重/门槛
     }
+
+
+# ====================== Function Calling（工具调用 / Agent）======================
+# 工具实现：把检索包装成一个"模型可以调用"的工具
+def search_knowledge(query: str) -> str:
+    """工具：在知识库里检索，返回最相关的资料片段（给模型看）。"""
+    r = retrieve(query)
+    if not r["matched"]:
+        return "知识库中没有找到与该问题相关的内容。"
+    return r["context"]
+
+
+# 工具清单：告诉模型"你有哪些工具、分别什么时候用"
+TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge",
+            "description": (
+                "在内部知识库中检索与问题最相关的资料片段。"
+                "当用户询问知识库覆盖的话题（Python、SQL、RAG、Docker、pandas 等）时使用；"
+                "如果只是打招呼或闲聊，不要调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "要检索的问题或关键词"}},
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+TOOL_FUNCS = {"search_knowledge": search_knowledge}
+
+AGENT_SYSTEM = """你是一个可以调用工具的助手。你可以使用 search_knowledge 工具查询内部知识库。
+
+规则：
+1. 用户的问题如果和知识库内容相关（Python / SQL / RAG / Docker / pandas 等），先调用 search_knowledge 查资料，再基于资料回答；
+2. 如果只是打招呼、闲聊，或明显和知识库无关，直接回答，不要调用工具；
+3. 只能依据工具返回的资料作答，不要编造资料里没有的内容。
+"""
+
+MAX_STEPS = 5   # 最多几轮"决策 → 调工具 → 喂回"，防止死循环
+
+
+def run_agent(question: str) -> dict:
+    """Agent 主循环：模型自己决定调不调工具、调几次。"""
+    messages = [
+        {"role": "system", "content": AGENT_SYSTEM},
+        {"role": "user", "content": question},
+    ]
+    trace = []   # 记录每一步：调了什么工具、什么参数、什么结果
+
+    for _ in range(MAX_STEPS):
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            tools=TOOLS_SCHEMA,          # ← 把工具清单交给模型
+        )
+        msg = resp.choices[0].message
+
+        # 模型没有要调工具 → 这就是最终回答，结束
+        if not msg.tool_calls:
+            return {"answer": msg.content, "trace": trace, "steps": len(trace)}
+
+        # 模型要调工具 → 先记下它的"点菜"，然后我们真正去执行
+        messages.append(msg)
+        for tc in msg.tool_calls:
+            name = tc.function.name
+            try:
+                args = json.loads(tc.function.arguments or "{}")   # ← 参数是 JSON 字符串，要解析
+            except json.JSONDecodeError:
+                args = {}
+            func = TOOL_FUNCS.get(name)
+            result = str(func(**args)) if func else f"未知工具：{name}"
+            trace.append({"tool": name, "arguments": args, "result": result[:600]})
+            # 把工具结果作为 role="tool" 的消息喂回模型
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+    return {"answer": "（已达到最大工具调用步数）", "trace": trace, "steps": len(trace)}
 
 
 # ====================== FastAPI 接口 ======================
@@ -215,6 +302,10 @@ app = FastAPI(title="企业知识库助手")
 
 
 class AskRequest(BaseModel):
+    question: str
+
+
+class AgentRequest(BaseModel):
     question: str
 
 
@@ -226,8 +317,15 @@ def home():
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    result = answer(req.question)          # 现在返回的是带来源的字典
+    """知识库问答（流程写死：先检索、再回答）。"""
+    result = answer(req.question)
     return {"question": req.question, **result}
+
+
+@app.post("/agent")
+def agent(req: AgentRequest):
+    """Agent 问答：由模型自己决定要不要调用工具（Function Calling）。"""
+    return run_agent(req.question)
 
 
 @app.post("/upload")
