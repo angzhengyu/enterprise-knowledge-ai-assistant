@@ -147,11 +147,9 @@ python -m uvicorn main:app --reload
 
 ## 11. Demo 截图
 
-> 运行后截图补充：
-> - 网页提问界面（含答案 + 来源）
-> - `/docs` 接口文档页
+![网页提问界面（含答案 + 来源）](assets/demo.png)
 
-_（此处放实际截图）_
+> 界面展示：输入问题 → 返回 **答案** + **来源文档** + **引用原文**（答案可溯源）
 
 ## 12. 技术难点
 
@@ -215,3 +213,4 @@ docker run -p 8000:8000 --env-file .env knowledge-ai-assistant
 ---
 
 *个人学习作品。仅用于展示 RAG + FastAPI + 语义检索的完整工程链路。*
+
