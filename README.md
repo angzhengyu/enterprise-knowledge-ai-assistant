@@ -35,7 +35,7 @@
 | 后端 | Python · FastAPI · Uvicorn |
 | 向量化 | 硅基流动 SiliconFlow · `BAAI/bge-m3`（OpenAI 兼容接口） |
 | 生成 | DeepSeek · `deepseek-chat` |
-| 检索 | scikit-learn · `cosine_similarity` + `np.argmax` + numpy |
+| 向量检索 | **Chroma 向量库**（语义）+ **字符级 TF-IDF**（关键词）→ **混合检索**（融合打分 + top-K） |
 | 数据处理 | python-dotenv · python-multipart |
 | 前端 | HTML · CSS · 原生 JS（`fetch`） |
 
@@ -51,11 +51,12 @@
          │
          ├─ 1. 切块 chunk（按句号切）
          ├─ 2. 语义向量化 embed_texts()  → 硅基流动 bge-m3
-         ├─ 3. 检索 cosine_similarity + np.argmax → 命中 best_chunk、source_title
+         ├─ 3. 检索 collection.query()   → Chroma 向量库返回最相近的块 + 来源
          ├─ 4. 生成 client.chat.completions → DeepSeek deepseek-chat
          └─ 5. 返回 {answer, source_title, source_chunk}
 
-知识库：knowledge/ 文件夹（.md/.txt），POST /upload 可上传新增并重建索引
+知识库：knowledge/ 文件夹（.md/.txt），POST /upload 上传新增并重建索引
+向量库：chroma_db/（Chroma 持久化，重启不丢；POST /reindex 可全量重建）
 ```
 
 ## 6. 项目目录
@@ -66,9 +67,10 @@ enterprise-knowledge-ai-assistant/
 ├── knowledge/         # 知识库（.md/.txt 文档），往里面加文件即新增知识
 ├── static/
 │   └── index.html     # 前端页面
+├── chroma_db/         # 向量库数据（Chroma 生成，已被 .gitignore 忽略）
 ├── requirements.txt   # Python 依赖
 ├── .env.example       # 配置示例（复制为 .env 填 key）
-├── .gitignore         # 忽略 .env / .venv 等
+├── .gitignore         # 忽略 .env / .venv / chroma_db 等
 └── README.md
 ```
 
@@ -90,20 +92,30 @@ python -m venv .venv
 
 ## 9. 启动方式
 
+**方式一：直接运行（最简单）**
 ```powershell
-cd enterprise-knowledge-ai-assistant
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload
+python main.py
 ```
 
-- 网页：打开 http://127.0.0.1:8000
-- 接口文档：打开 http://127.0.0.1:8000/docs
+**方式二：双击 `run.bat`**（Windows 用户）
+
+**方式三：uvicorn 命令（等价）**
+```powershell
+python -m uvicorn main:app --reload
+```
+> `python -m uvicorn` = 用 Python 启动 uvicorn 服务器；`main:app` = 去 `main.py` 里找名为 `app` 的对象；`--reload` = 改代码自动重启。
+
+启动后：
+- 网页：http://127.0.0.1:8000
+- 接口文档：http://127.0.0.1:8000/docs
+- 停止服务：`Ctrl+C`
 
 ## 10. API 说明
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
 | `/` | GET | 前端页面 |
-| `/ask` | POST | 提问。请求 `{"question": "..."}`；返回 `{"question", "answer", "source_title", "source_chunk"}` |
+| `/ask` | POST | 提问。请求 `{"question": "..."}`；返回 `{question, answer, source_title, source_chunk, sources_used, score, semantic, lexical, matched}` |
 | `/upload` | POST | 上传 `.md/.txt`，保存到 `knowledge/` 并重建索引 |
 
 **示例**
@@ -117,9 +129,15 @@ cd enterprise-knowledge-ai-assistant
   "question": "docker是什么",
   "answer": "根据提供的文档，Docker 是一种用于把应用容器化的工具，目的是方便部署。",
   "source_title": "docker",
-  "source_chunk": "Docker 用于把应用容器化，方便部署。"
+  "source_chunk": "Docker 用于把应用容器化，方便部署。",
+  "sources_used": ["docker", "python", "rag"],
+  "score": 0.3776,
+  "semantic": 0.4283,
+  "lexical": 0.1749,
+  "matched": true
 }
 ```
+> 知识库里没有相关内容时：`matched: false`，`source_title` / `source_chunk` 返回空字符串（不给假来源）。
 
 ## 11. Demo 截图
 
@@ -135,6 +153,7 @@ _（此处放实际截图）_
 2. **字面检索容易被通用字误导**：`TfidfVectorizer` 按字面重叠算相似度，提问「docker是什么」会被「什么是/是什么」这种通用字抢走，命中错误文档。
 3. **生成和向量化是不同服务**：DeepSeek 只有 chat 接口，没有 embeddings 接口。
 4. **文档上传后索引要重建**：新文档要立刻可检索，不能靠手动重启。
+5. **没有答案时仍显示"假来源"**：向量检索永远返回"距离最近的块"，哪怕完全不相关；知识库里没有的问题也会硬塞一个来源文档给用户，**造成误导**。
 
 ## 13. 解决方案
 
@@ -142,24 +161,48 @@ _（此处放实际截图）_
 2. **升级到语义向量（embedding）**：用 bge-m3 把整句话变成语义向量，按"意思"而非"字面"匹配，解决被通用字干扰的问题。
 3. 用**两个 OpenAI 兼容客户端**：一个指向 `api.deepseek.com`（生成），一个指向 `api.siliconflow.cn`（向量化），复用同一套调用方式。
 4. 把「读文件夹→切块→向量化」抽成 `rebuild_index()`，`/upload` 上传后调用它**重建索引**，新文档立即可检索。
+5. **混合检索（语义 + 关键词）+ 相关性门槛 + top-K**：
+   - 语义分 = 1 − Chroma 余弦距离；关键词分 = 字符级 TF-IDF 余弦相似度；两者**同为 0~1 量纲**后加权融合：`融合分 = 0.8×语义 + 0.2×关键词`。
+   - 融合分低于阈值 `MIN_FUSED_SCORE`（默认 0.12，**由真实样本校准**）→ 判定"知识库无相关内容"，**返回空来源**，不让模型硬答。
+   - 取融合分最高的 **top-K（默认 3）** 块一起交给模型，避免只给 1 块而漏掉真正能回答的那块。
+   - 实测：该答的 `docker是什么` 融合分 ≈0.38、口语化弱相关问题 ≈0.20；该拒的 `deepseek是啥吗` ≈−0.05，阈值 0.12 可正确区分。
 
 ## 14. 测试
 
 - 上传一份新文档后，`/ask` 能正确回答并返回其来源；
 - 修改/删除 `knowledge/` 里文件后重启，索引随之更新；
-- 中文、英文问题均可正常检索与回答。
+- 中文、英文问题均可正常检索与回答；
+- **口语化提问**（如「docker是啥玩意啊我去」）也能正确命中（语义 + 关键词混合检索）；
+- **知识库没有的问题**（如「deepseek是啥吗」）返回 `matched:false` 且**不给来源**（融合分 ≈−0.05）；
+- 口语化弱相关问题（如「我就想知道Python这是咋输出的来着」）融合分 ≈0.20，能命中，并借 top-K 拿到真正含答案的块。
 
-## 15. Docker（TODO）
+## 15. Docker 部署
 
-计划用 Dockerfile + docker-compose 打包运行（含 FastAPI 服务），便于一键部署。
+**方式一：Docker Compose（推荐，一键起）**
+```powershell
+# 确保本机装有 Docker Desktop 并已启动（docker --version 能显示版本）
+docker compose up -d --build
+```
+然后打开 http://127.0.0.1:8000 测试。API key 放在项目目录的 `.env`，`docker-compose.yml` 用 `env_file` 注入，**不会打进镜像**（`.dockerignore` 已排除 `.env`）。
+
+**方式二：Dockerfile 手动运行**
+```powershell
+docker build -t knowledge-ai-assistant .
+docker run -p 8000:8000 --env-file .env knowledge-ai-assistant
+```
+> 镜像里不包含 `.env`，密钥通过运行时的 `--env-file` / compose `env_file` 注入，安全。
 
 ## 16. Future Work
 
+- [x] 引入向量数据库（Chroma）持久化存储
+- [x] 混合检索（语义 + 关键词）与相关性门槛
+- [x] top-K 检索
+- [ ] 重排序（Reranker）精排
+- [ ] **检索评测集**（标注问题集 + 自动跑分），用准确率驱动阈值/权重调优
 - [ ] 支持 PDF / Word 等更多格式解析
-- [ ] 引入真正的向量数据库（如 Chroma）与重排序（Reranker）
 - [ ] 用户会话 / 权限 / 日志
 - [ ] 前端更完善（多轮对话、文档管理界面）
-- [ ] Docker 化部署
+- [x] Docker 化部署
 - [ ] 单元测试与 GitHub Actions
 
 ---

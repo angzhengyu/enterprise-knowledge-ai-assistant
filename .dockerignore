@@ -1,0 +1,8 @@
+# 不把密钥/环境/本地垃圾打进镜像
+.env
+.venv/
+__pycache__/
+.git/
+.gitignore
+.dockerignore
+README.md

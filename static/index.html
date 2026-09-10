@@ -5,71 +5,196 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>企业知识库 AI 助手</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #222; }
-    h1 { font-size: 22px; margin-bottom: 4px; }
-    .sub { color: #888; font-size: 13px; margin-bottom: 18px; }
-    .row { display: flex; gap: 8px; }
-    input { flex: 1; padding: 11px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
-    button { padding: 11px 20px; background: #1677ff; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
-    button:disabled { background: #9db8e6; cursor: not-allowed; }
-    .card { margin-top: 18px; padding: 16px; background: #f6f8fb; border-radius: 10px; }
-    .card .answer { font-size: 15px; line-height: 1.6; }
-    .source { margin-top: 12px; font-size: 13px; color: #666; border-top: 1px solid #e3e8f0; padding-top: 10px; }
-    .source b { color: #333; }
-    .err { margin-top: 12px; color: #c00; }
-    .hidden { display: none; }
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #1f2733;
+      --muted: #8b95a5;
+      --line: #e8ecf3;
+      --primary: #2f6bff;
+      --primary-weak: #eaf1ff;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 48px 16px;
+    }
+    .wrap { width: 100%; max-width: 680px; }
+
+    /* 头部 */
+    header { text-align: center; margin-bottom: 26px; }
+    header .logo {
+      width: 46px; height: 46px; margin: 0 auto 12px;
+      background: var(--primary); border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 22px;
+    }
+    header h1 { font-size: 21px; margin: 0 0 6px; font-weight: 600; }
+    header p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    /* 提问框 */
+    .search {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 8px 8px 8px 16px;
+      display: flex; align-items: center; gap: 8px;
+      box-shadow: 0 2px 10px rgba(31, 39, 51, .04);
+    }
+    .search input {
+      flex: 1; border: none; outline: none; background: transparent;
+      font-size: 15px; padding: 10px 0; color: var(--text);
+    }
+    .search input::placeholder { color: #b3bbc8; }
+    .search button {
+      border: none; background: var(--primary); color: #fff;
+      padding: 11px 20px; border-radius: 10px; font-size: 14px;
+      cursor: pointer; white-space: nowrap; transition: .15s;
+    }
+    .search button:hover:not(:disabled) { background: #1f58e0; }
+    .search button:disabled { background: #b9cbf3; cursor: default; }
+
+    /* 示例 */
+    .examples { margin: 12px 2px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .examples span { color: var(--muted); font-size: 12.5px; }
+    .chip {
+      border: 1px solid var(--line); background: #fff; color: #55617a;
+      font-size: 12.5px; padding: 5px 11px; border-radius: 999px;
+      cursor: pointer; transition: .15s;
+    }
+    .chip:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-weak); }
+
+    /* 结果 */
+    .card {
+      margin-top: 22px; background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 20px;
+      box-shadow: 0 2px 10px rgba(31, 39, 51, .04);
+      animation: in .18s ease-out;
+    }
+    @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+    .label { font-size: 12px; color: var(--muted); letter-spacing: .04em; margin-bottom: 8px; }
+    .answer { font-size: 15.5px; line-height: 1.75; word-break: break-word; }
+
+    .divider { height: 1px; background: var(--line); margin: 16px 0; }
+    .src-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .tag {
+      background: var(--primary-weak); color: var(--primary);
+      padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 500;
+    }
+    .quote {
+      margin-top: 10px; padding: 10px 12px; background: #fafbfd;
+      border-left: 3px solid var(--line); border-radius: 6px;
+      color: #6b7688; font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+    }
+
+    /* 加载 / 错误 */
+    .loading { margin-top: 22px; color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 9px; }
+    .spinner {
+      width: 15px; height: 15px; border: 2px solid var(--line);
+      border-top-color: var(--primary); border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { margin-top: 18px; color: #d93a3a; font-size: 14px; }
+    .hidden { display: none !important; }
+    footer { text-align: center; color: #b3bbc8; font-size: 12px; margin-top: 30px; }
   </style>
 </head>
 <body>
-  <h1>企业知识库 AI 助手</h1>
-  <div class="sub">输入问题，AI 会基于知识库回答，并告诉你来自哪篇文档</div>
+  <div class="wrap">
+    <header>
+      <div class="logo">✦</div>
+      <h1>企业知识库 AI 助手</h1>
+      <p>基于 RAG 的语义检索问答，答案可溯源</p>
+    </header>
 
-  <div class="row">
-    <input id="q" placeholder="例如：docker是什么" />
-    <button id="btn" onclick="ask()">提问</button>
+    <div class="search">
+      <input id="q" placeholder="问点什么…" autocomplete="off" />
+      <button id="btn" onclick="ask()">提问</button>
+    </div>
+
+    <div class="examples">
+      <span>试试：</span>
+      <div class="chip" onclick="askExample(this)">docker是什么</div>
+      <div class="chip" onclick="askExample(this)">什么是RAG？</div>
+      <div class="chip" onclick="askExample(this)">Python怎么输出？</div>
+      <div class="chip" onclick="askExample(this)">SQL怎么排序？</div>
+    </div>
+
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div><span>正在检索知识库并生成回答…</span>
+    </div>
+
+    <div id="out" class="card hidden">
+      <div class="label">回答</div>
+      <div class="answer" id="answer"></div>
+      <div id="srcbox">
+        <div class="divider"></div>
+        <div class="src-row">来源文档 <span class="tag" id="source_title"></span></div>
+        <div class="quote" id="source_chunk"></div>
+      </div>
+    </div>
+
+    <div id="err" class="err"></div>
+
+    <footer>RAG · bge-m3 语义检索 · Chroma 向量库 · DeepSeek 生成</footer>
   </div>
-
-  <div id="out" class="card hidden">
-    <div class="answer"><b>答案：</b><span id="answer"></span></div>
-    <div class="source">来源文档：<b id="source_title"></b></div>
-    <div class="source">引用原文：<span id="source_chunk"></span></div>
-  </div>
-
-  <div id="err" class="err"></div>
 
   <script>
-    async function ask() {
-      const q = document.getElementById('q').value.trim();
-      const errEl = document.getElementById('err');
-      errEl.textContent = '';
-      if (!q) { errEl.textContent = '请先输入问题'; return; }
+    const $ = id => document.getElementById(id);
+    const btn = $('btn'), input = $('q'), errEl = $('err');
 
-      const btn = document.getElementById('btn');
+    function askExample(el) {
+      input.value = el.textContent.trim();
+      ask();
+    }
+
+    async function ask() {
+      const question = input.value.trim();
+      errEl.textContent = '';
+      if (!question) { errEl.textContent = '请先输入问题'; return; }
+
       btn.disabled = true;
+      $('out').classList.add('hidden');
+      $('loading').classList.remove('hidden');
+
       try {
-        const r = await fetch('/ask', {
+        const res = await fetch('/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: q }),
+          body: JSON.stringify({ question })
         });
-        if (!r.ok) throw new Error('接口返回 ' + r.status);
-        const data = await r.json();
+        if (!res.ok) throw new Error('接口返回 ' + res.status);
+        const data = await res.json();
 
-        document.getElementById('out').classList.remove('hidden');
-        document.getElementById('answer').textContent = data.answer;
-        document.getElementById('source_title').textContent = data.source_title;
-        document.getElementById('source_chunk').textContent = data.source_chunk;
+        $('answer').textContent = data.answer || '(无回答)';
+        // 没有来源（说明知识库里没有相关内容）→ 隐藏来源区，避免误导用户
+        if (data.source_title) {
+          $('source_title').textContent = data.source_title;
+          $('source_chunk').textContent = data.source_chunk || '';
+          $('srcbox').classList.remove('hidden');
+        } else {
+          $('srcbox').classList.add('hidden');
+        }
+        $('out').classList.remove('hidden');
       } catch (e) {
-        errEl.textContent = '请求失败：' + e.message;
+        errEl.textContent = '请求失败：' + e.message + '（后端服务是否在运行？）';
       } finally {
+        $('loading').classList.add('hidden');
         btn.disabled = false;
       }
     }
 
-    // 按回车也能提问
-    document.getElementById('q').addEventListener('keydown', e => {
-      if (e.key === 'Enter') ask();
-    });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+    input.focus();
   </script>
 </body>
 </html>

@@ -3,6 +3,9 @@
 .venv/
 venv/
 
+# 向量库生成的数据（本地可重建，不上传）
+chroma_db/
+
 # Python
 __pycache__/
 *.py[cod]

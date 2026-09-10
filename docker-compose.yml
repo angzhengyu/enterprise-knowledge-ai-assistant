@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    container_name: knowledge-ai-assistant
+    ports:
+      - "8000:8000"
+    # 你的 API key 放在同目录的 .env，启动时注入容器（.env 不会进入镜像，安全）
+    env_file:
+      - .env
+    restart: unless-stopped
